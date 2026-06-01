@@ -368,25 +368,41 @@ def _clean_url(url: str) -> str:
 
 def parse_urls(text: str, *, parse_urls_without_scheme: bool = True) -> list:
     """."""
-    grammar = ioc_grammars.scheme_less_url if parse_urls_without_scheme else ioc_grammars.url
-    raw_urls = _scan_url_candidates(text, grammar)
+    raw_urls, scheme_ful_spans = _scan_url_candidates_with_spans(text, ioc_grammars.url)
+    raw_urls = list(raw_urls)
+    if parse_urls_without_scheme:
+        # Blank the exact spans the scheme-ful URLs occupy so the scheme-less
+        # grammar can't re-discover their authority/path/query as a second URL.
+        masked = _mask_spans(text, scheme_ful_spans)
+        raw_urls.extend(_scan_url_candidates(masked, ioc_grammars.scheme_less_url))
     # Cleaning may collapse two raw matches to the same string, so dedupe again.
     return _deduplicate(map(_clean_url, raw_urls))
 
 
 def parse_urls_complete(text: str, *, parse_urls_without_scheme: bool = True) -> list:
     """."""
-    grammar = ioc_grammars.scheme_less_url_complete if parse_urls_without_scheme else ioc_grammars.url_complete
-    raw_urls = _scan_url_candidates(text, grammar)
+    raw_urls, scheme_ful_spans = _scan_url_candidates_with_spans(text, ioc_grammars.url_complete)
+    raw_urls = list(raw_urls)
+    if parse_urls_without_scheme:
+        masked = _mask_spans(text, scheme_ful_spans)
+        raw_urls.extend(_scan_url_candidates(masked, ioc_grammars.scheme_less_url_complete))
     return _deduplicate(map(_clean_url, raw_urls))
 
 
 def _parse_url(url: str) -> ParseResults:
-    """Parse a URL using the narrower grammar first, then the complete grammar."""
-    try:
-        return ioc_grammars.scheme_less_url.parse_string(url)
-    except ParseException:
-        return ioc_grammars.scheme_less_url_complete.parse_string(url)
+    """Parse a URL by trying the four URL grammars in order, since each may match
+    a different shape of input (scheme-ful vs scheme-less, narrow vs complete)."""
+    for grammar in (
+        ioc_grammars.url,
+        ioc_grammars.scheme_less_url,
+        ioc_grammars.url_complete,
+        ioc_grammars.scheme_less_url_complete,
+    ):
+        try:
+            return grammar.parse_string(url)
+        except ParseException:
+            continue
+    raise ParseException(url, msg=f"could not parse URL: {url!r}")
 
 
 def _remove_url_domain_name(urls: list, text: str) -> str:
@@ -416,7 +432,16 @@ def _remove_url_paths(urls: list, text: str) -> str:
 def _remove_url_userinfo(urls: list, text: str) -> str:
     """Remove userinfo from each URL so it is not parsed as an email address."""
     for url in urls:
-        parsed_url = ioc_grammars.scheme_less_url_complete.parse_string(url)
+        # Only the "complete" grammars expose url_userinfo. Try both because
+        # `scheme_less_url_complete` now rejects scheme-ful URLs.
+        for grammar in (ioc_grammars.url_complete, ioc_grammars.scheme_less_url_complete):
+            try:
+                parsed_url = grammar.parse_string(url)
+                break
+            except ParseException:
+                continue
+        else:
+            continue
         userinfo = parsed_url.url_authority.get("url_userinfo")
         if userinfo:
             text = text.replace(f"{userinfo}@", " ")
@@ -480,9 +505,10 @@ def _scan_candidates(text, candidate_re, grammar):
 
 
 def _url_candidate_spans(text):
-    """Yield non-whitespace runs around each `_URL_MARKER_RE` hit. Built in
-    Python instead of as `\\S*<marker>\\S*` so a long non-whitespace run
-    that contains no marker (e.g. a 10kB base64 blob) doesn't trigger
+    """Yield `(offset, substring)` for each non-whitespace run around a
+    `_URL_MARKER_RE` hit, where `offset` is the run's start index in `text`.
+    Built in Python instead of as `\\S*<marker>\\S*` so a long non-whitespace
+    run that contains no marker (e.g. a 10kB base64 blob) doesn't trigger
     O(n²) regex backtracking."""
     seen_spans: set[tuple[int, int]] = set()
     n = len(text)
@@ -500,19 +526,44 @@ def _url_candidate_spans(text):
         if span not in seen_spans:
             seen_spans.add(span)
             last_span_end = end
-            yield text[start:end]
+            yield start, text[start:end]
 
 
-def _scan_url_candidates(text, grammar):
+def _scan_url_candidates_with_spans(text, grammar):
+    """Run `grammar.scan_string` over each URL candidate span, returning both
+    the deduplicated match values and the absolute `(start, end)` character
+    spans every raw match occupies in `text`. The spans let callers mask the
+    exact regions a scheme-ful URL covers (rather than `str.replace`-ing the
+    match text, which blows holes in a longer URL whose substring equals a
+    shorter match elsewhere)."""
     seen: set[str] = set()
     out: list[str] = []
-    for span in _url_candidate_spans(text):
-        for tokens, _start, _end in grammar.scan_string(span):
+    spans: list[tuple[int, int]] = []
+    for offset, span in _url_candidate_spans(text):
+        for tokens, sub_start, sub_end in grammar.scan_string(span):
+            spans.append((offset + sub_start, offset + sub_end))
             value = tokens[0]
             if value and value not in seen:
                 seen.add(value)
                 out.append(value)
-    return out
+    return out, spans
+
+
+def _scan_url_candidates(text, grammar):
+    values, _spans = _scan_url_candidates_with_spans(text, grammar)
+    return values
+
+
+def _mask_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Return `text` with every `(start, end)` character range blanked to
+    spaces. Same-length replacement keeps all other offsets stable."""
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start, min(end, len(chars))):
+            chars[i] = " "
+    return "".join(chars)
 
 
 _IPV6_HEXNUMS = frozenset(hexdigits)
