@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Fixed
 
 - `urls_complete` now accepts `@` in URL paths, matching the RFC 3986 `pchar` definition (e.g. `https://example.com/users/@alice` is now captured in full).
+- `parse_user_agents` no longer absorbs a trailing token like ` TLP` from input such as `Mozilla/4.0 (...) TLP:RED`. A bare (version-less) platform token must not be immediately followed by `:`. Versioned platforms (e.g. `Chrome/91.0`) are unaffected. ([#227](https://github.com/fhightower/ioc-finder/issues/227))
 
 ### Added
 

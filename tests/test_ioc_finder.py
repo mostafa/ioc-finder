@@ -547,6 +547,39 @@ def test_user_agents():
     assert "Mozilla/5.0 (Windows nt 6.1; wow64; rv:11.0) Gecko Firefox/11.0" in iocs["user_agents"]
 
 
+def test_user_agent_does_not_swallow_trailing_tlp_label():
+    """See https://github.com/fhightower/ioc-finder/issues/227."""
+    s = "Mozilla/4.0 (compatible; MSIE 7.0b; Windows NT 5.1; .NET CLR 1.1.4322; InfoPath.1) TLP:RED"
+    iocs = find_iocs(s)
+    assert iocs["user_agents"] == [
+        "Mozilla/4.0 (compatible; MSIE 7.0b; Windows NT 5.1; .NET CLR 1.1.4322; InfoPath.1)"
+    ]
+    assert iocs["tlp_labels"] == ["TLP:RED"]
+
+
+def test_user_agent_does_not_swallow_trailing_tlp_label_with_versioned_platform():
+    s = "Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/89.0 TLP:AMBER"
+    iocs = find_iocs(s)
+    assert iocs["user_agents"] == ["Mozilla/5.0 (Windows NT 10.0) Gecko/20100101 Firefox/89.0"]
+    assert iocs["tlp_labels"] == ["TLP:AMBER"]
+
+
+def test_user_agent_drops_bare_platform_followed_by_colon():
+    s = "Mozilla/5.0 (X11) Gecko Chrome HOST: example.com"
+    iocs = find_iocs(s)
+    assert iocs["user_agents"] == ["Mozilla/5.0 (X11) Gecko Chrome"]
+    assert "example.com" in iocs["domains"]
+
+
+def test_user_agent_keeps_versioned_platform_before_colon():
+    """A platform that carries a numeric version is kept even when the next
+    char is ':' (e.g. ':443' acting like a port number). The trailing ':443'
+    is not a valid platform start, so the user_agent loop exits cleanly."""
+    s = "Mozilla/5.0 (X11; Linux x86_64) Chrome/91.0:443/foo"
+    iocs = find_iocs(s)
+    assert iocs["user_agents"] == ["Mozilla/5.0 (X11; Linux x86_64) Chrome/91.0"]
+
+
 def test_monero_addresses():
     result = find_iocs(
         "496aKKdqF1xQSSEzw7wNrkZkDUsCD5cSmNCfVhVgEps52WERBcLDGzdF5UugmFoHMm9xRJdewvK2TFfAJNwEV25rTcVF5Vp"

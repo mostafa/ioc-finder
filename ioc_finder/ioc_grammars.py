@@ -371,7 +371,12 @@ user_agent_details = Regex(r"\(.+?\)")
 user_agent_platform = Combine(
     alphanum_word_start
     + Regex(r"[a-zA-Z]{2,}/?").add_condition(lambda tokens: tokens[0].lower().strip("/") != "mozilla")
-    + Optional(user_agent_platform_version)
+    # A platform either has a numeric version, or is a bare token that must not be
+    # immediately followed by ":". Without that constraint a token like "TLP" in
+    # "...) TLP:RED" gets absorbed into the user agent. The MatchFirst tries the
+    # version first so platforms with versions (e.g. "Chrome/91.0") still match
+    # cleanly even when they happen to abut a colon. See issue #227.
+    + (user_agent_platform_version | NotAny(":"))
 )
 user_agent = Combine(
     user_agent_start + user_agent_details + ZeroOrMore(user_agent_platform + Optional(user_agent_details)),
